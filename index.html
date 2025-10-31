@@ -1,0 +1,278 @@
+<!-- Save this as index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Daily Caller Report</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/papaparse@latest/papaparse.min.js"></script>
+  <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+  <style>
+    #reportTable th,
+    #reportTable td,
+    #b2bTable th,
+    #b2bTable td {
+      box-sizing: border-box;
+      vertical-align: middle;
+      text-align: center;
+      line-height: 1.5;
+    }
+    .overflow-x-auto {
+      overflow-x: visible !important;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div class="container mx-auto p-6">
+    <h1 class="text-3xl font-bold mb-2 text-center text-black">Calling Report</h1>
+
+    <div class="flex flex-col md:flex-row justify-between items-center mb-4 space-y-4 md:space-y-0 md:space-x-4">
+      <input type="file" id="csvFile" accept=".csv" class="border p-2 rounded" />
+      <div class="flex items-center space-x-2">
+        <label for="teamFilter" class="font-medium">Filter by Team:</label>
+        <select id="teamFilter" class="border p-2 rounded">
+          <option value="all">All Teams</option>
+          <option value="WEST/EAST">WEST/EAST</option>
+          <option value="DELHI">DELHI</option>
+          <option value="NORTH/SOUTH">NORTH/SOUTH</option>
+          <option value="HYDERABAD">HYDERABAD</option>
+        </select>
+      </div>
+      <div class="flex items-center space-x-2">
+        <label for="customDate" class="font-medium">Report Date:</label>
+        <input type="date" id="customDate" class="border p-2 rounded" />
+      </div>
+      <button id="screenshotBtn" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+        Take Screenshot
+      </button>
+    </div>
+
+    <!-- Two-column layout -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <!-- Main Report Table -->
+      <div class="overflow-x-auto">
+        <table id="reportTable" class="bg-white border border-black">
+          <thead id="tableHead"></thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+
+      <!-- B2B Report Table -->
+      <div class="overflow-x-auto">
+        <table id="b2bTable" class="bg-white border border-black">
+          <thead id="b2bTableHead"></thead>
+          <tbody id="b2bTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const teamMapping = {
+      "Pooja Kate": "WEST/EAST - 1",
+      "Akshata Raigawli": "WEST/EAST - 1",
+      "Ashish Bhoir": "WEST/EAST - 1",
+      "Vrushali": "WEST/EAST - 2",
+      "Arya Nikhil": "WEST/EAST - 2",
+      "Aakansha Choudhary": "DELHI",
+      
+      "Khushi": "DELHI",
+      "Aarthi Davey": "NORTH/SOUTH",
+      "R. Vimalkumar": "NORTH/SOUTH",
+      "Suresh S": "NORTH/SOUTH",
+      "Kruthika Jain": "NORTH/SOUTH",
+      "Vikas Murki": "HYDERABAD",
+      "Suhaani Bhooshan": "B2B"
+    };
+
+    const teamGroups = {
+      "WEST/EAST - 1": "WEST/EAST",
+      "WEST/EAST - 2": "WEST/EAST",
+      "DELHI": "DELHI",
+      "NORTH/SOUTH": "NORTH/SOUTH",
+      "HYDERABAD": "HYDERABAD",
+      "B2B": "B2B"
+    };
+
+    let latestParsedData = null;
+    let latestFileName = "";
+
+    function extractDateFromFileName(fileName) {
+      const selectedDate = document.getElementById("customDate").value;
+      let date;
+
+      if (selectedDate) {
+        date = new Date(selectedDate);
+      } else {
+        const match = fileName.match(/\d{4}-\d{2}-\d{2}/);
+        date = match ? new Date(match[0]) : new Date("2025-05-22");
+      }
+
+      const day = String(date.getDate()).padStart(2, "0");
+      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${day}-${monthNames[date.getMonth()]}-${date.getFullYear()}`;
+    }
+
+    function renderTableHeaders(date) {
+      const headerHtml = `
+        <tr class="bg-black text-white">
+          <th class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">Team / Caller<br>${date}</th>
+          <th class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">Connected Calls</th>
+          <th class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">Duration (In Min)</th>
+          <th class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">%</th>
+        </tr>
+      `;
+      document.getElementById("tableHead").innerHTML = headerHtml;
+      document.getElementById("b2bTableHead").innerHTML = headerHtml;
+    }
+
+    document.getElementById("csvFile").addEventListener("change", (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      latestFileName = file.name;
+      renderTableHeaders(extractDateFromFileName(latestFileName));
+
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: h => h.trim().replace(/^"|"$/g, ""),
+        transform: v => v.trim().replace(/^"|"$/g, ""),
+        complete: results => {
+          latestParsedData = results.data;
+          processData(latestParsedData);
+        },
+        error: err => console.error("Error parsing CSV:", err),
+      });
+    });
+
+    function processData(data) {
+      const callers = data
+        .filter(row => row["TeamMember Role"] === "CALLER" && row["TeamMember Name"] && teamMapping[row["TeamMember Name"]])
+        .map(row => ({
+          name: row["TeamMember Name"],
+          team: teamMapping[row["TeamMember Name"]],
+          teamGroup: teamGroups[teamMapping[row["TeamMember Name"]]],
+          connectedCalls: parseInt(row["Connected Calls"]) || 0,
+          duration: Math.round((parseInt(row["Duration"]) || 0) / 60),
+        }));
+
+      const teamTotals = {};
+      callers.forEach(caller => {
+        const team = caller.team;
+        if (!teamTotals[team]) teamTotals[team] = { connectedCalls: 0, duration: 0, callers: [] };
+        teamTotals[team].connectedCalls += caller.connectedCalls;
+        teamTotals[team].duration += caller.duration;
+        teamTotals[team].callers.push(caller);
+      });
+
+      Object.values(teamTotals).forEach(t => {
+        t.callers.forEach(c => {
+          c.percentage = t.duration > 0 ? Math.round((c.duration / t.duration) * 100) : 0;
+        });
+        t.callers.sort((a, b) => b.duration - a.duration);
+      });
+
+      const grandTotal = {
+        connectedCalls: callers.reduce((sum, c) => sum + c.connectedCalls, 0),
+        duration: callers.reduce((sum, c) => sum + c.duration, 0),
+      };
+
+      displayData(teamTotals, grandTotal);
+    }
+
+    function displayData(teamTotals, grandTotal) {
+      const tableBody = document.getElementById("tableBody");
+      const b2bBody = document.getElementById("b2bTableBody");
+      tableBody.innerHTML = "";
+      b2bBody.innerHTML = "";
+
+      const teamFilter = document.getElementById("teamFilter").value;
+
+      Object.keys(teamTotals)
+        .filter(team => team !== "B2B" && (teamFilter === "all" || teamGroups[team] === teamFilter))
+        .sort((a, b) => {
+          const order = ["WEST/EAST - 1", "WEST/EAST - 2", "DELHI", "NORTH/SOUTH", "HYDERABAD"];
+          return order.indexOf(a) - order.indexOf(b);
+        })
+        .forEach(team => {
+          const teamData = teamTotals[team];
+          const teamRow = document.createElement("tr");
+          teamRow.className = "bg-gray-200";
+          teamRow.innerHTML = `
+            <td class="px-4 py-2 border border-black font-bold text-lg align-middle">${team}</td>
+            <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${teamData.connectedCalls}</td>
+            <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${teamData.duration}</td>
+            <td class="px-4 py-2 border border-black align-middle"></td>
+          `;
+          tableBody.appendChild(teamRow);
+
+          teamData.callers.forEach(caller => {
+            const percentageColor = caller.percentage >= 70 ? "bg-green-300" : caller.percentage >= 30 ? "bg-yellow-300" : "bg-red-300";
+            const callerRow = document.createElement("tr");
+            callerRow.innerHTML = `
+              <td class="px-4 py-2 border border-black font-bold text-lg align-middle pl-8">${caller.name}</td>
+              <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${caller.connectedCalls}</td>
+              <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${caller.duration}</td>
+              <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle ${percentageColor}">${caller.percentage}%</td>
+            `;
+            tableBody.appendChild(callerRow);
+          });
+        });
+
+      if (teamTotals["B2B"]) {
+        const teamData = teamTotals["B2B"];
+        const teamRow = document.createElement("tr");
+        teamRow.className = "bg-gray-200";
+        teamRow.innerHTML = `
+          <td class="px-4 py-2 border border-black font-bold text-lg align-middle">B2B</td>
+          <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${teamData.connectedCalls}</td>
+          <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${teamData.duration}</td>
+          <td class="px-4 py-2 border border-black align-middle"></td>
+        `;
+        b2bBody.appendChild(teamRow);
+
+        teamData.callers.forEach(caller => {
+          const percentageColor = caller.percentage >= 70 ? "bg-green-300" : caller.percentage >= 30 ? "bg-yellow-300" : "bg-red-300";
+          const callerRow = document.createElement("tr");
+          callerRow.innerHTML = `
+            <td class="px-4 py-2 border border-black font-bold text-lg align-middle pl-8">${caller.name}</td>
+            <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${caller.connectedCalls}</td>
+            <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${caller.duration}</td>
+            <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle ${percentageColor}">${caller.percentage}%</td>
+          `;
+          b2bBody.appendChild(callerRow);
+        });
+      }
+    }
+
+    document.getElementById("teamFilter").addEventListener("change", () => {
+      if (latestParsedData) {
+        renderTableHeaders(extractDateFromFileName(latestFileName));
+        processData(latestParsedData);
+      }
+    });
+
+    document.getElementById("customDate").addEventListener("change", () => {
+      renderTableHeaders(extractDateFromFileName(latestFileName));
+      if (latestParsedData) processData(latestParsedData);
+    });
+
+    document.getElementById("screenshotBtn").addEventListener("click", () => {
+      const table = document.getElementById("reportTable");
+      html2canvas(table, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff"
+      }).then(canvas => {
+        const link = document.createElement("a");
+        link.download = `Calling_Report_${extractDateFromFileName(latestFileName || "report")}.png`;
+        link.href = canvas.toDataURL("image/png");
+        link.click();
+      });
+    });
+
+    renderTableHeaders("Select Date");
+  </script>
+</body>
+</html>
