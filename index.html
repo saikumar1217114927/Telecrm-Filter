@@ -8,6 +8,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/papaparse@latest/papaparse.min.js"></script>
   <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
     #reportTable th,
     #reportTable td,
@@ -18,9 +19,6 @@
       text-align: center;
       line-height: 1.5;
     }
-    .overflow-x-auto {
-      overflow-x: visible !important;
-    }
   </style>
 </head>
 <body class="bg-gray-100 font-sans">
@@ -28,7 +26,7 @@
     <h1 class="text-3xl font-bold mb-2 text-center text-black">Calling Report</h1>
 
     <div class="flex flex-col md:flex-row justify-between items-center mb-4 space-y-4 md:space-y-0 md:space-x-4">
-      <input type="file" id="csvFile" accept=".csv" class="border p-2 rounded" />
+      <input type="file" id="csvFile" accept=".csv,.xlsx,.xls" class="border p-2 rounded" />
       <div class="flex items-center space-x-2">
         <label for="teamFilter" class="font-medium">Filter by Team:</label>
         <select id="teamFilter" class="border p-2 rounded">
@@ -48,13 +46,16 @@
       </button>
     </div>
 
+    <div id="uploadStatus" class="text-center text-sm mb-4"></div>
+
     <!-- Two-column layout -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div id="reportContainer" class="grid grid-cols-1 md:grid-cols-2 gap-6">
       <!-- Main Report Table -->
       <div class="overflow-x-auto">
         <table id="reportTable" class="bg-white border border-black">
           <thead id="tableHead"></thead>
           <tbody id="tableBody"></tbody>
+          <tfoot id="tableFoot"></tfoot>
         </table>
       </div>
 
@@ -74,14 +75,15 @@
       "Priya Chandra": "WEST/EAST - 1",
       "Bhavik Parida": "WEST/EAST - 1",
       "Akshata Raigawli": "WEST/EAST - 1",
+      "Sidda Maru": "WEST/EAST - 2",
       "Vrushali": "WEST/EAST - 2",
      "Aakansha Choudhary": "DELHI",
+      
       "Aarthi Davey": "NORTH/SOUTH",
      "R. Vimalkumar": "NORTH/SOUTH",
      "Suresh S": "NORTH/SOUTH",
       "Kruthika Jain": "NORTH/SOUTH",
       "Vikas Murki": "HYDERABAD",
-     "Suhaani Bhooshan": "B2B"
     };
 
     const teamGroups = {
@@ -125,23 +127,81 @@
       document.getElementById("b2bTableHead").innerHTML = headerHtml;
     }
 
+    function setStatus(message, isError) {
+      const el = document.getElementById("uploadStatus");
+      el.textContent = message;
+      el.className = "text-center text-sm mb-4 " + (isError ? "text-red-600" : "text-green-700");
+    }
+
+    // Trim string keys/values so "Vrushali " (trailing space) still matches
+    // the mapping, whether the row came from CSV or an Excel sheet.
+    function normalizeRow(row) {
+      const normalized = {};
+      Object.keys(row).forEach(key => {
+        let value = row[key];
+        if (typeof value === "string") value = value.trim();
+        normalized[key.trim()] = value;
+      });
+      return normalized;
+    }
+
     document.getElementById("csvFile").addEventListener("change", (event) => {
       const file = event.target.files[0];
       if (!file) return;
       latestFileName = file.name;
       renderTableHeaders(extractDateFromFileName(latestFileName));
 
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        transformHeader: h => h.trim().replace(/^"|"$/g, ""),
-        transform: v => v.trim().replace(/^"|"$/g, ""),
-        complete: results => {
-          latestParsedData = results.data;
-          processData(latestParsedData);
-        },
-        error: err => console.error("Error parsing CSV:", err),
-      });
+      const lowerName = file.name.toLowerCase();
+
+      if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
+        // Excel workbook: read as binary and parse with SheetJS.
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: "array" });
+
+            // Prefer a sheet literally named "Individual" (the flat,
+            // per-caller sheet); otherwise fall back to the first sheet.
+            const sheetName = workbook.SheetNames.includes("Individual")
+              ? "Individual"
+              : workbook.SheetNames[0];
+            const sheet = workbook.Sheets[sheetName];
+
+            const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+            const normalized = json.map(normalizeRow);
+
+            latestParsedData = normalized;
+            setStatus(`Loaded ${normalized.length} rows from "${sheetName}" sheet.`, false);
+            processData(normalized);
+          } catch (err) {
+            console.error("Error parsing Excel file:", err);
+            setStatus("Could not read this Excel file. Please check the format.", true);
+          }
+        };
+        reader.onerror = (err) => {
+          console.error("Error reading file:", err);
+          setStatus("Could not read this file.", true);
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        // CSV
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: h => h.trim().replace(/^"|"$/g, ""),
+          transform: v => v.trim().replace(/^"|"$/g, ""),
+          complete: results => {
+            latestParsedData = results.data;
+            setStatus(`Loaded ${results.data.length} rows from CSV.`, false);
+            processData(latestParsedData);
+          },
+          error: err => {
+            console.error("Error parsing CSV:", err);
+            setStatus("Could not read this CSV file.", true);
+          },
+        });
+      }
     });
 
     function processData(data) {
@@ -181,8 +241,10 @@
 
     function displayData(teamTotals, grandTotal) {
       const tableBody = document.getElementById("tableBody");
+      const tableFoot = document.getElementById("tableFoot");
       const b2bBody = document.getElementById("b2bTableBody");
       tableBody.innerHTML = "";
+      tableFoot.innerHTML = "";
       b2bBody.innerHTML = "";
 
       const teamFilter = document.getElementById("teamFilter").value;
@@ -217,6 +279,17 @@
             tableBody.appendChild(callerRow);
           });
         });
+
+      // Grand total row (reflects all teams overall, not just the current filter)
+      const grandTotalRow = document.createElement("tr");
+      grandTotalRow.className = "bg-black text-white";
+      grandTotalRow.innerHTML = `
+        <td class="px-4 py-2 border border-black font-bold text-lg align-middle">GRAND TOTAL</td>
+        <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${grandTotal.connectedCalls}</td>
+        <td class="px-4 py-2 border border-black text-center font-bold text-lg align-middle">${grandTotal.duration}</td>
+        <td class="px-4 py-2 border border-black align-middle"></td>
+      `;
+      tableFoot.appendChild(grandTotalRow);
 
       if (teamTotals["B2B"]) {
         const teamData = teamTotals["B2B"];
@@ -257,8 +330,9 @@
     });
 
     document.getElementById("screenshotBtn").addEventListener("click", () => {
-      const table = document.getElementById("reportTable");
-      html2canvas(table, {
+      // Capture the whole report (both tables), not just the left table
+      const container = document.getElementById("reportContainer");
+      html2canvas(container, {
         scale: 2,
         useCORS: true,
         backgroundColor: "#ffffff"
